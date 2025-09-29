@@ -1,0 +1,180 @@
+install.packages("dagitty")
+install.packages("ggplot2")
+library(dagitty)
+library(ggplot2)
+
+dag_original <- dagitty("dag {
+  U1 -> X
+  U1 -> Z
+  U2 -> Z
+  U2 -> Y
+  Z -> Y
+  X -> Y
+}")
+
+
+###Graph and simulate example 4 of Lab7 (Damned if you do damned if you don't) [1 point]###
+plot(dag_original)
+
+
+set.seed(42)
+n <- 10000
+U1 <- rnorm(n, mean = 0, sd = 1)
+U2 <- rnorm(n, mean = 0, sd = 1)
+Z <- 1*U1 + 1*U2 + rnorm(n, mean = 0, sd = 1)
+X <- 1*U1 + rnorm(n, mean = 0, sd = 1)
+Y <- 2*X + 1*Z + 1*U2 + rnorm(n, mean = 0, sd = 1)
+unadj_model <- lm(Y ~ X)
+# Print summary to see coefficient and SE
+summary(unadj_model)
+# Adjusted: Regress Y on X and Z
+adj_model <- lm(Y ~ X + Z)
+# Print summary to see coefficient and SE
+summary(adj_model)
+
+
+
+
+#Extract coefficients and standard errors for X
+# coef() gets the estimates, summary()$coef gets SEs
+beta_unadj <- coef(unadj_model)["X"]
+se_unadj <- summary(unadj_model)$coef["X", "Std. Error"]
+beta_adj <- coef(adj_model)["X"]
+se_adj <- summary(adj_model)$coef["X", "Std. Error"]
+
+#Create a data frame for plotting
+coefs_df <- data.frame(
+  Model = c("Unadjusted", "Adjusted"),
+  Beta = c(beta_unadj, beta_adj),
+  SE = c(se_unadj, se_adj)
+)
+
+#Plot the coefficients with error bars (95% CI) and true effect line
+# geom_point() plots the points
+# geom_errorbar() adds error bars (approx 95% CI: +/- 1.96*SE)
+# geom_hline() adds the true causal effect line
+ggplot(coefs_df, aes(x = Model, y = Beta)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = Beta - 1.96 * SE, ymax = Beta + 1.96 * SE), width = 0.2) +
+  geom_hline(yintercept = 2, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Coefficients of X With and Without Controlling for Z",
+       y = "Estimated Coefficient of X",
+       x = "Model") +
+  ylim(1.5, 3)  
+
+
+
+
+
+
+
+
+
+#Now we modify the DAG
+# Step 1: Define the modified DAG
+# Add Z -> X to the original
+dag_modified <- dagitty("dag {
+  U1 -> Z
+  U2 -> Z
+  U1 -> X
+  Z -> X
+  Z -> Y
+  U2 -> Y
+  X -> Y
+}")
+
+# Step 2: Plot the modified DAG
+plot(dag_modified)
+
+# Step 3: Simulate data for the modified DAG
+# Generate in order: U1/U2, then Z, then X (now depends on Z), then Y
+set.seed(42)
+n <- 10000
+U1 <- rnorm(n, mean = 0, sd = 1)
+U2 <- rnorm(n, mean = 0, sd = 1)
+Z <- 1*U1 + 1*U2 + rnorm(n, mean = 0, sd = 1)
+X <- 1*U1 + 1*Z + rnorm(n, mean = 0, sd = 1)  # Added Z effect
+Y <- 2*X + 1*Z + 1*U2 + rnorm(n, mean = 0, sd = 1)
+
+# Step 4: Create all combinations of controls
+# Use expand.grid to get all 8 subsets (including none)
+control_combos <- expand.grid(Z = c(FALSE, TRUE), U1 = c(FALSE, TRUE), U2 = c(FALSE, TRUE))
+
+# Step 5: Run regressions for each combination and store results
+# Initialize an empty data frame
+results_df <- data.frame(Controls = character(), Beta = numeric(), SE = numeric())
+
+for (i in 1:nrow(control_combos)) {
+# Build list of controls for this row
+  ctrl_vars <- c()
+  if (control_combos$Z[i]) ctrl_vars <- c(ctrl_vars, "Z")
+  if (control_combos$U1[i]) ctrl_vars <- c(ctrl_vars, "U1")
+  if (control_combos$U2[i]) ctrl_vars <- c(ctrl_vars, "U2")
+  
+# Create row name (e.g., "Z_U1" or "none")
+  row_name <- if (length(ctrl_vars) == 0) "none" else paste(ctrl_vars, collapse = "_")
+  
+# Build formula string (e.g., "Y ~ X + Z + U1")
+  ctrl_str <- if (length(ctrl_vars) == 0) "" else paste0(" + ", paste(ctrl_vars, collapse = " + "))
+  formula_str <- paste0("Y ~ X", ctrl_str)
+  
+# Fit the model
+  model <- lm(as.formula(formula_str))
+  
+# Extract beta and SE for X
+  beta <- coef(model)["X"]
+  se <- summary(model)$coef["X", "Std. Error"]
+  
+# Add to results
+  results_df <- rbind(results_df, data.frame(Controls = row_name, Beta = beta, SE = se))
+}
+
+# Step 6: Display the results table in console
+print(results_df)
+
+# Step 7: Export the table
+# Install xtable if not already installed (uncomment if needed)
+install.packages("xtable")
+library(xtable)
+
+# Create the output directory if it doesn't exist
+if (!dir.exists("output")) {
+  dir.create("output")
+}
+
+# Export to .tex (for LaTeX) using xtable
+print(xtable(results_df, caption = "Regression Results", digits = 3), 
+      type = "latex", file = "output/results_table.tex")
+
+# Export to .txt (plain text)
+write.table(results_df, file = "output/results_table.txt", row.names = FALSE, quote = FALSE)
+
+
+
+
+
+# Based on your findings, in what way(s) can you get a good estimate of the causal effect? [0.5 point]
+# A good estimate (close to the true causal effect of 2) can be obtained by controlling for Z along with U1,
+# or Z along with U2, or Z along with both U1 and U2. These combinations block the confounding paths
+# while managing the collider bias introduced by Z.
+
+# What is the minimal sufficient set of controls to get a good estimate? [0.5 point]
+# The minimal sufficient sets of controls are {Z, U1} or {Z, U2}. Each set includes two variables
+# and is sufficient to get an unbiased estimate of the causal effect.
+
+# Provide intuition on why you can get good estimates controlling for the variables you established above [0.5 point]
+# Z must be controlled because it is a common cause of X and Y, which opens a confounding path (X <- Z -> Y)
+# if ignored. However, Z is a collider between U1 and U2, so controlling for Z alone opens a spurious
+# path (X <- U1 -> Z <- U2 -> Y) due to induced association at the collider. Adding U1 or U2 blocks
+# this spurious path by controlling the common cause (U1 or U2) of the collider's parents, thus
+# preventing bias while preserving the adjustment for the confounder Z.
+
+
+
+
+
+
+
+
+
